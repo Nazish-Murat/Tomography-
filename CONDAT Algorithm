@@ -1,0 +1,227 @@
+%matplotlib inline
+from IPython.display import HTML
+import matplotlib as mplt
+from matplotlib import animation, rc
+from PIL import Image
+import numpy as np
+import matplotlib.pyplot as plt
+import holoviews as hv
+hv.extension('bokeh')
+import param
+import pywt
+import panel as pn
+from scipy import fftpack as ft
+from skimage.transform import radon,iradon,rescale,rotate
+imagename = 'ab.png'
+imagename2 = 'ac.jpg'
+
+##### TOOLS #####
+
+def to255(imrec):
+    return np.round((imrec-np.min(imrec))/np.ptp(imrec)*255)
+    
+def to_square(image):
+    M,N = image.shape
+    P = max(M,N)
+    res = np.zeros((P,P))
+    if M==N: 
+        print("Already square")
+        res = np.copy(image)
+    else:
+        res[int(P/2-M/2):int(P/2+M/2),int(P/2-N/2):int(P/2+N/2)]=image
+    return res
+
+def PSNR(I,Iref):
+    temp=I.ravel()/np.linalg.norm(I)
+    tempref=Iref.ravel()/np.linalg.norm(Iref)
+    NbP=I.size
+    EQM=np.sum((temp-tempref)**2)/NbP
+    b=np.max(np.abs(tempref))**2
+    return 10*np.log10(b/EQM)
+
+def mse(imageA, imageB):
+    imgA=imageA.astype("float")
+    imgB = imageB.astype("float")
+    err = np.sum((imgA - imgB)** 2)
+    err /= float(imageA.shape[0] * imageA.shape[1])
+    return err
+    
+ image = Image.open(imagename).convert('L')
+image2 = image.rotate(45)
+n0,n1=image.size
+img = np.array(image).astype('float64')
+## to grayscale if RGB
+if len(img.shape)==3:
+    img = np.copy((img[:,:,0]+img[:,:,1]+img[:,:,2])/3)
+dim1 = img.shape[0]
+dim2 = img.shape[1]
+img = np.resize(img,(dim1,dim2))
+img = to_square(img)
+plt.imshow(img,cmap='gray')
+plt.title("Shepp-Logan ghost")
+plt.colorbar()
+plt.show()   
+    
+ ## Radon transform: from image to sinogram
+def R(image,N=100):
+    theta = np.linspace(0,180,N)
+    return radon(image,theta,circle=False)
+
+## Adjoint of Radon transform: from sinogram to image using backpropagation (unfiltered or not)
+def R_star(sin,filt=None,inter='cubic'):
+    T,A = sin.shape
+    theta = np.linspace(0,180,A)
+    return iradon(sin,theta,filter=filt,interpolation=inter,circle=False)
+    
+    
+    fig, axs = plt.subplots(1, 2, figsize=(9, 3))
+axs[0].imshow(R(img),cmap='gray')
+axs[0].set_title('Sinogram')
+axs[1].imshow(R_star(R(img)),cmap='gray')
+axs[1].set_title('Backpropagation')
+plt.show()
+    
+    
+    #taken from PoissonEditing TP
+def GradientHor(x):
+    y=x-np.roll(x,1,axis=1)
+    y[:,0]=0
+    return y
+def GradientVer(x):
+    y=x-np.roll(x,1,axis=0)
+    y[0,:]=0
+    return y
+def DivHor(x):
+    N=len(x[0])
+    y=x-np.roll(x,-1,axis=1)
+    y[:,0]=-x[:,1]
+    y[:,N-1]=x[:,N-1]
+    return y
+def DivVer(x):
+    N=len(x)
+    y=x-np.roll(x,-1,axis=0)
+    y[0,:]=-x[1,:]
+    y[N-1,:]=x[N-1,:]
+    return y
+def Gradient(x):
+    y=[]
+    y.append(GradientHor(x))
+    y.append(GradientVer(x))
+    return np.array(y)
+def Div(y):
+    x=DivHor(y[0,:])+DivVer(y[1,:])
+    return x
+    
+ # define F (function to be minimized)
+def F(y,x,lam,N=100):
+    return np.sum((y-R(x,N))**2)/2+lam*np.sum(np.abs(Gradient(x)))
+
+# define grad of f
+def grad_f(y,x,N=100):
+    return R_star(R(x,N)-y) #you can choose one of the 2 expressions, depending on what is easier and more efficient to implement
+    #return R_star(y)-R_star_R(x) #R_star_R(x) stands for R_star(R(x))
+
+# define sum of L* of u
+def sum_L_m_star(u):
+    return Div(u)
+
+# define l_m(x):
+def L_m(x):
+    return Gradient(x)
+    
+#define prox of sigma.h*
+def prox_h_star(sigma,u):
+    #from Moreau's identity: prox sigma h* = Id - prox sigma h
+    return u-np.sign(u)*np.maximum(0,np.abs(u)-sigma)   
+    
+    
+    ### Condat algorithm ####
+    def Condat(y,lam,rho,tau,sigma,x0,u0,N=100,maxit=10,tol=0.01):
+    x = np.copy(x0) #initial point
+    u = np.copy(u0) #initial dual variables
+    fun = [F(y,x,lam,N)]
+    conv=[]
+    for k in range(maxit):
+        print("iter #",k)
+        tilde_x = np.copy(x-tau*grad_f(y,x,N)-tau*sum_L_m_star(u))
+        x_plus_un = np.copy(rho*tilde_x +(1-rho)*x)
+        tilde_u = np.copy(prox_h_star(lam*sigma,u+sigma*L_m(2*tilde_x-x)))
+        u_plus_un = np.copy(rho*tilde_u+(1-rho)*u)
+        print(np.linalg.norm(img-x_plus_un)/np.linalg.norm(img))
+        if k==0: 
+            err=np.linalg.norm(x_plus_un-x)
+        else:
+            err=np.linalg.norm(x_plus_un-x)/conv[0]
+            print("err : ",err)
+        conv.append(err)    
+        x = np.copy(x_plus_un)
+        u = np.copy(u_plus_un)
+        fun.append(F(y,x,lam,N))
+        print("F   : ",fun[-1],"\n")
+        if err<=tol:
+            break
+        
+    return x,fun,np.array(conv[1:])
+    
+   ##### Computation ##### 
+ 
+  #precise x0, y, and find constants L and sup_Lm
+N = 20                           # number of projections
+y = R(img,N)                     # objective sinogram
+imgb = R_star(y)                 # backpropagation 
+imgfb = R_star(y,'ramp')         # filtered backpropagation
+x0 = imgb                        # initialisation   
+    
+  lam = 0.0001
+rho = 0.5
+sigma = 100
+maxit=100
+tol=0.001
+L = 1.        #Lipschitz constant of grad f (L = |||R*R|||)
+sup_Lm = 10.  #operator norm constant of div(grad) ( = |||sum Lm*Lm|||, it should be less than 10)
+tau = 0.99/(L/2+sigma*sup_Lm)
+print("Lambda, sigma, tau : ", lam,sigma,tau)
+imgc,fun,conv = Condat(y,lam,rho,tau,sigma,x0,Gradient(x0),N=N,maxit=maxit,tol=tol)  
+    
+plt.imshow(imgc)
+plt.colorbar()    
+    
+  fig, axs = plt.subplots(1, 5, figsize=(16, 3), sharey=True)
+axs[0].imshow(img,cmap='gray')
+axs[0].set_title('Target')
+axs[1].imshow(imgb,cmap='gray')
+axs[1].set_title('Backpropagation')
+axs[2].imshow(imgfb,cmap='gray')
+axs[2].set_title('FB')
+axs[3].imshow(x0,cmap='gray')
+axs[3].set_title('Init')
+axs[4].imshow(imgc,cmap='gray')
+axs[4].set_title('Condat solution')
+plt.show()  
+    
+    
+  dif2 = (np.abs(imgc-img)/np.linalg.norm(img,1))
+plt.imshow(mask*dif2)
+plt.title('Masked absolute difference')
+plt.colorbar()
+plt.show()  
+    
+   plt.plot(fun)
+plt.yscale('log')
+plt.grid() 
+    
+  plt.plot(conv)
+plt.yscale('log')
+plt.grid()
+
+print("PSNR backpropagation          : ", PSNR(mask*imgb,mask*img))
+print("PSNR filtered backpropagation : ", PSNR(mask*imgfb,mask*img))
+print("PSNR variational method       : ", PSNR(mask*imgc,mask*img),'\n')
+print("MSE backpropagation          : ", mse(mask*imgb,mask*img))
+print("MSE filtered backpropagation : ", mse(mask*imgfb,mask*img))
+print("MSE variational method       : ",mse(mask*imgc,mask*img))
+
+
+
+
+    
