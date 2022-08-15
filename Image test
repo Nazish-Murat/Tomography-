@@ -1,0 +1,588 @@
+import matplotlib.pyplot as plt
+import numpy as np
+import pywt
+#import param
+#import panel as pn
+
+from skimage.data import shepp_logan_phantom
+from skimage.transform import radon, iradon, rescale, rotate
+from skimage.metrics import peak_signal_noise_ratio as psnr
+from skimage.metrics import mean_squared_error as mse
+from scipy import fftpack as ft
+
+img = shepp_logan_phantom()
+img = rescale(img, scale=0.4, mode='reflect', multichannel=False)
+L,C = np.shape(img)
+print("____ : ", L,C)
+print("____ : ", np.min(img), np.max(img))
+
+plt.imshow(img, cmap=plt.cm.Greys_r)
+plt.title('___')
+plt.show()
+
+def zero_padding(image):
+    M,N = image.shape
+    res = np.zeros((M*2,N*2))
+    res[int(M/2):int(M*3/2),int(N/2):int(N*3/2)] = np.copy(image)
+    return res
+
+imgz = zero_padding(img)
+plt.imshow(imgz, cmap=plt.cm.Greys_r)
+plt.title('___')
+plt.show()
+
+def radon_transform(img, theta_list):
+    R = np.zeros((np.shape(img)[0] , len(theta_list)))
+    # rotation de l'image pour chaque angle
+    for ind in range(len(theta_list)):
+        img_rot = rotate(img, -theta_list[ind])
+        R[:,ind] = sum(img_rot)
+    return R
+
+# skimage.transform.rotate() :
+# interpolation spline
+# parametre optionnel : (entre 0 et 5)
+
+# test
+theta_list = np.arange(180)
+our_sinogram = radon_transform(imgz, theta_list)
+
+plt.imshow(our_sinogram, cmap=plt.cm.Greys_r, aspect='auto')
+plt.title("Manual Radon transform\n(Sinogram)")
+plt.xlabel("Projection angle (deg)")
+plt.ylabel("Projection position (pixels)")
+plt.show()
+
+sinogram_radon = radon(imgz, theta=theta_list, circle=True)
+
+plt.imshow(sinogram_radon, cmap=plt.cm.Greys_r, aspect='auto')
+plt.title("Radon transform\n(Sinogram)")
+plt.xlabel("Projection angle (deg)")
+plt.ylabel("Projection position (pixels)")
+plt.show()
+
+def normalize_img(img_test):
+    img_test += np.abs(np.min(img_test))
+    range_values = np.abs(np.max(img_test) - np.min(img_test))
+    return img_test/range_values
+    
+iradon_sinogram_radon = iradon(sinogram_radon) # par défaut, filtre ramp
+## crop image
+crop_iradon_sinogram_radon = normalize_img(iradon_sinogram_radon[int(L/2):L+int(L/2),int(C/2):C+int(C/2)])
+print("_____ : ", np.min(crop_iradon_sinogram_radon), np.max(crop_iradon_sinogram_radon)) #  entre 0 et 1
+plt.imshow(crop_iradon_sinogram_radon, cmap=plt.cm.Greys_r)
+plt.title('_____')
+plt.show()
+
+print("___ : ", psnr(img, crop_iradon_sinogram_radon)) #img true, img_test
+
+iradon_our_sinogram = iradon(our_sinogram)
+crop_iradon_our_sinogram = normalize_img(iradon_our_sinogram[int(L/2):L+int(L/2),int(C/2):C+int(C/2)])
+
+plt.imshow(crop_iradon_our_sinogram, cmap=plt.cm.Greys_r)
+plt.title('___ \n iradon(our_sinogram)')
+plt.show()
+
+print("PSNR : ", psnr(img, crop_iradon_our_sinogram)) #img true, img_test
+
+def retroprojection_non_filtree(sinogram, theta_list):
+    L,A = np.shape(sinogram) #320,160
+    temp = np.zeros((L,L,A)) #320,320,160
+    img_rec = np.zeros((L,L)) #320,320
+    for index_angle in range(A):
+        #print("angle numéro :", index_angle)
+        tempp = np.zeros((L, L))
+        # sélection de la colonne
+        col = sinogram[:,index_angle]
+        for index_line in range(len(col)):
+            #print("valeur à copier :", col[index_line])
+            tempp[index_line,:] = np.repeat(col[index_line],L)
+            #print(tempp[index_line,:])
+        temp[:,:,index_angle] = rotate(tempp, theta_list[index_angle])
+        #plt.imshow(temp[:,:,index_angle], cmap=plt.cm.Greys_r)
+        #plt.title('Fantôme de Shepp-Logan reconstruit \n rétroprojection non filtrée')
+        #plt.show()
+        img_rec += temp[:,:,index_angle]
+    
+    #return img_rec
+    return normalize_img(rotate(img_rec, 90))
+
+### test
+our_img_rec = retroprojection_non_filtree(our_sinogram, theta_list)
+print(np.min(our_img_rec), np.max(our_img_rec))
+
+crop_our_img_rec = our_img_rec[int(L/2):L+int(L/2),int(C/2):C+int(C/2)]
+
+plt.imshow(our_img_rec, cmap=plt.cm.Greys_r)
+plt.title('____')
+plt.show()
+
+print("PSNR : ", psnr(img, crop_our_img_rec)) #img true, img_test
+
+theta_list_interpol = np.arange(0,180,4)
+print(len(theta_list_interpol))
+our_sinogram2 = radon_transform(imgz, theta_list_interpol)
+
+## nearest-neighbour
+def retroprojection_non_filtree(sinogram, theta_list):
+    L,A = np.shape(sinogram) #320,160
+    temp = np.zeros((L,L,A)) #320,320,160
+    img_rec = np.zeros((L,L)) #320,320
+    for index_angle in range(A):
+        #print("angle numéro :", index_angle)
+        tempp = np.zeros((L, L))
+        # sélection de la colonne
+        col = sinogram[:,index_angle]
+        for index_line in range(len(col)):
+            #print("valeur à copier :", col[index_line])
+            tempp[index_line,:] = np.repeat(col[index_line],L)
+            #print(tempp[index_line,:])
+            
+        temp[:,:,index_angle] = rotate(tempp, theta_list[index_angle], order = 0)
+        #plt.imshow(temp[:,:,index_angle], cmap=plt.cm.Greys_r)
+        #plt.title('Fantôme de Shepp-Logan reconstruit \n rétroprojection non filtrée')
+        #plt.show()
+        img_rec += temp[:,:,index_angle]
+    
+    #return img_rec
+    return normalize_img(rotate(img_rec, 90))
+
+### test
+our_img_rec_order0 = retroprojection_non_filtree(our_sinogram2, theta_list_interpol)
+crop_our_img_rec0 = our_img_rec_order0[int(L/2):L+int(L/2),int(C/2):C+int(C/2)]
+
+plt.imshow(our_img_rec_order0, cmap=plt.cm.Greys_r)
+plt.title('____')
+plt.show()
+
+print("PSNR : ", psnr(img, crop_our_img_rec0)) #img true, img_test
+
+
+## bi-quadratique
+def retroprojection_non_filtree(sinogram, theta_list):
+    L,A = np.shape(sinogram) #320,160
+    temp = np.zeros((L,L,A)) #320,320,160
+    img_rec = np.zeros((L,L)) #320,320
+    for index_angle in range(A):
+        #print("angle numéro :", index_angle)
+        tempp = np.zeros((L, L))
+        # sélection de la colonne
+        col = sinogram[:,index_angle]
+        for index_line in range(len(col)):
+            #print("valeur à copier :", col[index_line])
+            tempp[index_line,:] = np.repeat(col[index_line],L)
+            #print(tempp[index_line,:])
+            
+        temp[:,:,index_angle] = rotate(tempp, theta_list[index_angle], order = 2)
+        #plt.imshow(temp[:,:,index_angle], cmap=plt.cm.Greys_r)
+        #plt.title('Fantôme de Shepp-Logan reconstruit \n rétroprojection non filtrée')
+        #plt.show()
+        img_rec += temp[:,:,index_angle]
+    
+    #return img_rec
+    return normalize_img(rotate(img_rec, 90))
+
+### test
+our_img_rec_order2 = retroprojection_non_filtree(our_sinogram2, theta_list_interpol)
+crop_our_img_rec2 = our_img_rec_order2[int(L/2):L+int(L/2),int(C/2):C+int(C/2)]
+
+plt.imshow(our_img_rec_order2, cmap=plt.cm.Greys_r)
+plt.title('___')
+plt.show()
+print("PSNR : ", psnr(img, crop_our_img_rec2)) #img true, img_tes
+
+
+## bi-cubique
+def retroprojection_non_filtree(sinogram, theta_list):
+    L,A = np.shape(sinogram) #320,160
+    temp = np.zeros((L,L,A)) #320,320,160
+    img_rec = np.zeros((L,L)) #320,320
+    for index_angle in range(A):
+        #print("angle numéro :", index_angle)
+        tempp = np.zeros((L, L))
+        # sélection de la colonne
+        col = sinogram[:,index_angle]
+        for index_line in range(len(col)):
+            #print("valeur à copier :", col[index_line])
+            tempp[index_line,:] = np.repeat(col[index_line],L)
+            #print(tempp[index_line,:])
+        temp[:,:,index_angle] = rotate(tempp, theta_list[index_angle], order = 3)
+        #plt.imshow(temp[:,:,index_angle], cmap=plt.cm.Greys_r)
+        #plt.title('Fantôme de Shepp-Logan reconstruit \n rétroprojection non filtrée')
+        #plt.show()
+        img_rec += temp[:,:,index_angle]
+    
+    #return img_rec
+    return normalize_img(rotate(img_rec, 90))
+
+### test
+our_img_rec_order3 = retroprojection_non_filtree(our_sinogram2, theta_list_interpol)
+crop_our_img_rec3 = our_img_rec_order3[int(L/2):L+int(L/2),int(C/2):C+int(C/2)]
+
+plt.imshow(our_img_rec_order3, cmap=plt.cm.Greys_r)
+plt.title('_____')
+plt.show()
+print("PSNR : ", psnr(img, crop_our_img_rec3)) #img true, img_test
+
+
+
+def filtrage(sinogram,filtre,theta_list):
+    T,A = sinogram.shape #Taille image, nb d'angles
+    res = sinogram*0.
+    for j in range(A): #colonnes = angles
+        four = ft.fft(sinogram[:,j])
+        res[:,j] = np.real(ft.ifft(four*filtre(T)))
+    return res
+
+## plot avec le code de Simon
+def rampe(T):
+    step = 2*np.pi/T
+    w = np.arange(-np.pi,np.pi,step)
+    r = abs(w) # approx filtre rampe
+    filt = ft.fftshift(r)
+    return filt
+
+plt.plot(-rampe(T=440), label="rampe")
+plt.legend()
+plt.show()
+
+def rampe_adoucie(T):
+    a=1 # param d'adoucissage (a=0 non adouci, a=1 adouci)
+    step = 2*np.pi/T
+    w = np.arange(-np.pi, np.pi, step)
+    rn1 = abs(w)  # filtre rampe
+    rn2 = a*np.hanning(T)  #sinc window with 'a' modifying the cutoff freqs
+    r = rn1*(rn2)**2             #modulation of ramp filter with sinc window
+    filt = ft.fftshift(r) 
+    return filt
+
+plt.plot(rampe_adoucie(T=440), label="rampe douce")
+
+plt.legend()
+plt.show()
+
+
+## code zaza
+def arange2(start, stop=None, step=1):
+    """#Modified version of numpy.arange which corrects error associated with non-integer step size"""
+    if stop == None:
+        a = np.arange(start)
+    else: 
+        a = np.arange(start, stop, step)
+        if a[-1] > stop-step:   
+            a = np.delete(a, -1)
+    return a
+
+def rampe_zaza(sinogram, a):
+    T,A = np.shape(sinogram)
+    ## paramètre a : permet d'adoucir la rampe (a proche de 1) ou rampe pure (a proche de 0)
+    step = 2*np.pi/T
+    w = arange2(-np.pi, np.pi, step)
+    if len(w) < T:
+        w = np.concatenate([w, [w[-1]+step]]) #depending on image size, it might be that len(w) =  
+                                              #projLen - 1. Another element is added to w in this case
+    rn1 = abs(2/a*np.sin(a*w/2));  #approximation of ramp filter abs(w) with a funciton abs(sin(w))
+    rn2 = np.sin(a*w/2)/(a*w/2);   #sinc window with 'a' modifying the cutoff freqs
+    r = rn1*(rn2)**2;              #modulation of ramp filter with sinc window
+    
+    filt = ft.fftshift(r)   
+    filtSino = np.zeros((T, A))
+    for i in range(A):
+        projfft = ft.fft(sinogram[:,i])
+        filtProj = projfft*filt
+        filtSino[:,i] = np.real(ft.ifft(filtProj))
+        
+    return np.array(filtSino)
+
+#print(np.shape(rampe_zaza(our_sinogram)))
+for a in [0.1,0.4,0.6,0.8,0.99]:
+    plt.figure()
+    plt.plot(rampe_zaza(our_sinogram,a), label="rampe")
+    plt.title("rampe, a={}".format(a))
+
+
+#sinoFilt_zaza = filtrage_zaza(our_sinogram,rampe_zaza,theta_list)
+for a in [0.1,0.4,0.6,0.8,0.99]:
+    plt.figure()
+    sinoFilt_zaza = rampe_zaza(our_sinogram, a)
+    imrec_rampezaza = retroprojection_non_filtree(sinoFilt_zaza, theta_list)
+    crop_imrec_rampezaza = imrec_rampezaza[int(L/2):L+int(L/2),int(C/2):C+int(C/2)]
+
+    plt.imshow(crop_imrec_rampezaza,cmap='gray')
+    plt.title("Retroprojection filtree \n rampe douce, a={}".format(a))
+    plt.colorbar()
+    plt.show()
+
+    print("PSNR : ", psnr(img, crop_imrec_rampezaza)) #img true, img_test
+## Radon transform: from image to sinogram
+def R(image,N=100):
+    theta = np.linspace(0,180,N)
+    return radon(image,theta,circle=False)
+
+## Adjoint of Radon transform: from sinogram to image using backpropagation (unfiltered or not)
+def R_star(sin,filt=None,inter='cubic'):
+    T,A = sin.shape
+    theta = np.linspace(0,180,A)
+    return iradon(sin,theta,filter=filt,interpolation=inter,circle=False)
+
+def SeuillageDouxOndelettes(I,wave,Seuil):
+    L=pywt.dwt_max_level(len(I),pywt.Wavelet(wave).dec_len)
+    wavelet_coeffs= pywt.wavedecn(I, wave, mode='per', level=L)
+    arr, coeff_slices, coeff_shapes = pywt.ravel_coeffs(wavelet_coeffs)
+    temp=pywt.threshold(arr,Seuil,mode='soft')
+    test=pywt.unravel_coeffs(temp, coeff_slices, coeff_shapes, output_format='wavedecn')
+    Irec=pywt.waverecn(test, wave,mode='per')
+    return Irec
+
+def Normel1Ondelettes(I,wave):
+    L=pywt.dwt_max_level(len(I),pywt.Wavelet(wave).dec_len)
+    wavelet_coeffs= pywt.wavedecn(I, wave, mode='per', level=L)  # T
+    arr, coeff_slices, coeff_shapes = pywt.ravel_coeffs(wavelet_coeffs)
+    norml1=sum(np.abs(arr)) # norm
+    return norml1
+def Function(x,y,lam,wave,N):
+    return lam*Normel1Ondelettes(x,wave) + 0.5*(np.linalg.norm(R(x,N)-y,2)**2)
+
+def Gradient(x,b,N):
+    return R_star(R(x,N))- R_star(b)
+
+def ForwardBackward(y,x0,step,lam,Niter,wave,N=50,tol=0.0001,f=Function):
+    seuil=lam*step
+    x=x0  # Initialisation via retroprojection non-filtrée
+    F=[]
+    nfin = Niter
+    conv = []
+    for n in range(Niter):
+        #print("Iter n°",n)
+        I = x-step*Gradient(x,y,N)
+        T = SeuillageDouxOndelettes(I, wave, seuil)
+        if n==-1:
+            err = np.linalg.norm(T-x)#/np.linalg.norm(x)
+        else:
+            err = np.linalg.norm(T-x)/np.linalg.norm(x)
+        conv.append(err)
+        x = np.copy(T)
+        F +=  [f(x,y,lam,wave,N)]
+        #print("err : ", err,'\n')
+        if err<=tol:
+            nfin = n
+            found = True
+            break
+    return x,np.array(F), np.array(conv[1:]), nfin
+
+N = 30
+y = R(img,N)
+lam = 1
+wave = 'db4'
+imgb = R_star(y)
+imgfb = R_star(y,'ramp')
+x0 = imgb
+step = 0.005
+Niter = 100
+imgv,F,conv, itert = ForwardBackward(y,x0,step,lam,Niter,wave,N=N)
+
+fig, axs = plt.subplots(1, 5, figsize=(16, 3), sharey=True)
+axs[0].imshow(img,cmap='gray')
+axs[0].set_title('Target')
+axs[1].imshow(imgb,cmap='gray')
+axs[1].set_title('Backpropagation')
+axs[2].imshow(imgfb,cmap='gray')
+axs[2].set_title('FB')
+axs[3].imshow(x0,cmap='gray')
+axs[3].set_title('Init')
+axs[4].imshow(imgv,cmap='gray')
+axs[4].set_title('Forward-Backward')
+plt.show()
+
+plt.plot(F)
+plt.yscale('log')
+plt.title('F-B algorithm cost function')
+plt.xlabel('iterations')
+plt.grid()
+plt.ylabel("cost function")
+plt.show()
+
+plt.plot(conv)
+plt.yscale('log')
+plt.title('F-B algorithm convergence')
+plt.xlabel('iterations')
+plt.grid()
+plt.ylabel("||x(n+1)-x(n)|| / ||x(n)||")
+plt.show()
+
+#print("PSNR backpropagation          : ", psnr(img,imgb))
+print("PSNR filtered backpropagation : ", psnr(img,imgfb))
+print("PSNR variational method       : ", psnr(img,imgv),'\n')
+print("MSE backpropagation          : ", mse(imgb,img))
+print("MSE filtered backpropagation : ", mse(imgfb,img))
+print("MSE variational method     : ",mse(imgv,img))
+
+N = 30
+y = R(img,N)
+lam = 1
+wave = 'db4'
+imgb = R_star(y)
+imgfb = R_star(y,'ramp')
+x0 = imgb
+step = 0.005
+Niter = 100
+imgv,F,conv, itert = ForwardBackward(y,x0,step,lam,Niter,wave,N=N)
+
+lam = 1
+wave = 'db4'
+step = 0.005
+Niter = 100
+proj_list = [5,10,15,20,30,40,50,60,70,80,90,100]
+psnr_fb = []
+psnr_v = []
+for i in proj_list:
+    print('#################################')
+    print('N = ',i)
+    y = R(img,i)
+    imgb = R_star(y)
+    imgfb = R_star(y,'ramp')
+    x0 = imgb
+    imgv,F,conv,itert = ForwardBackward(y,x0,step,lam,Niter,wave,N=i)
+    psnr_fb.append(psnr(img,imgfb))
+    psnr_v.append(psnr(img,imgv))
+    print("PSNR Filtered backpropagation: ",psnr_fb[-1])
+    print("PSNR Forward-Backward        : ",psnr_v[-1])
+    print('#################################\n')
+
+plt.plot(proj_list,psnr_v,label='Forward-Backward',linestyle='-',marker='.',c='red')
+plt.plot(proj_list,psnr_fb,label='Filtered backpropagation',linestyle='--',c='blue',marker='.')
+plt.grid()
+plt.ylabel('PSNR')
+plt.xlabel('# projections')
+plt.title('')
+plt.legend()
+plt.show()
+#taken from PoissonEditing TP
+def GradientHor(x):
+    y=x-np.roll(x,1,axis=1)
+    y[:,0]=0
+    return y
+def GradientVer(x):
+    y=x-np.roll(x,1,axis=0)
+    y[0,:]=0
+    return y
+def DivHor(x):
+    N=len(x[0])
+    y=x-np.roll(x,-1,axis=1)
+    y[:,0]=-x[:,1]
+    y[:,N-1]=x[:,N-1]
+    return y
+def DivVer(x):
+    N=len(x)
+    y=x-np.roll(x,-1,axis=0)
+    y[0,:]=-x[1,:]
+    y[N-1,:]=x[N-1,:]
+    return y
+def Gradient(x):
+    y=[]
+    y.append(GradientHor(x))
+    y.append(GradientVer(x))
+    return np.array(y)
+def Div(y):
+    x=DivHor(y[0,:])+DivVer(y[1,:])
+    return x
+
+# define F (function to be minimized)
+def F(y,x,lam,N=100):
+    return np.sum((y-R(x,N))**2)/2+lam*np.sum(np.abs(Gradient(x)))
+
+# define grad of f
+def grad_f(y,x,N=100):
+    return R_star(R(x,N)-y) #you can choose one of the 2 expressions, depending on what is easier and more efficient to implement
+    #return R_star(y)-R_star_R(x) #R_star_R(x) stands for R_star(R(x))
+
+# define sum of L* of u
+def sum_L_m_star(u):
+    return Div(u)
+
+# define l_m(x):
+def L_m(x):
+    return Gradient(x)
+    
+#define prox of sigma.h*
+def prox_h_star(sigma,u):
+    #from Moreau's identity: prox sigma h* = Id - prox sigma h
+    return u-np.sign(u)*np.maximum(0,np.abs(u)-sigma)
+
+def Condat(y,lam,rho,tau,sigma,x0,u0,N=100,maxit=10,tol=0.01):
+    x = np.copy(x0) #initial point
+    u = np.copy(u0) #initial dual variables
+    fun = [F(y,x,lam,N)]
+    conv=[]
+    for k in range(maxit):
+        print("iter #",k)
+        tilde_x = np.copy(x-tau*grad_f(y,x,N)-tau*sum_L_m_star(u))
+        x_plus_un = np.copy(rho*tilde_x +(1-rho)*x)
+        tilde_u = np.copy(prox_h_star(lam*sigma,u+sigma*L_m(2*tilde_x-x)))
+        u_plus_un = np.copy(rho*tilde_u+(1-rho)*u)
+        print(np.linalg.norm(img-x_plus_un)/np.linalg.norm(img))
+        if k==0: 
+            err=np.linalg.norm(x_plus_un-x)
+        else:
+            err=np.linalg.norm(x_plus_un-x)/conv[0]
+            print("err : ",err)
+        conv.append(err)    
+        x = np.copy(x_plus_un)
+        u = np.copy(u_plus_un)
+        fun.append(F(y,x,lam,N))
+        print("F   : ",fun[-1],"\n")
+        if err<=tol:
+            break
+        
+    return x,fun,np.array(conv[1:])
+
+#precise x0, y, and find constants L and sup_Lm
+N = 20                           # number of projections
+y = R(img,N)                     # objective sinogram
+imgb = R_star(y)                 # backpropagation 
+imgfb = R_star(y,'ramp')         # filtered backpropagation
+x0 = imgb                        # initialisation 
+
+lam = 0.0001
+rho = 0.5
+sigma = 100
+maxit=100
+tol=0.001
+L = 1.        #Lipschitz constant of grad f (L = |||R*R|||)
+sup_Lm = 10.  #operator norm constant of div(grad) ( = |||sum Lm*Lm|||, it should be less than 10)
+tau = 0.99/(L/2+sigma*sup_Lm)
+print("Lambda, sigma, tau : ", lam,sigma,tau)
+imgc,fun,conv = Condat(y,lam,rho,tau,sigma,x0,Gradient(x0),N=N,maxit=maxit,tol=tol)
+
+fig, axs = plt.subplots(1, 5, figsize=(16, 3), sharey=True)
+axs[0].imshow(img,cmap='gray')
+axs[0].set_title('Target')
+axs[1].imshow(imgb,cmap='gray')
+axs[1].set_title('Backpropagation')
+axs[2].imshow(imgfb,cmap='gray')
+axs[2].set_title('FB')
+axs[3].imshow(x0,cmap='gray')
+axs[3].set_title('Init')
+axs[4].imshow(imgc,cmap='gray')
+axs[4].set_title('Condat solution')
+plt.show()
+
+dif2 = (np.abs(imgc-img)/np.linalg.norm(img,1))
+plt.imshow(dif2)
+plt.title('Masked absolute difference')
+plt.colorbar()
+plt.show()
+
+plt.plot(fun)
+plt.yscale('log')
+plt.grid()
+plt.plot(conv)
+plt.yscale('log')
+plt.grid()
+
+print("PSNR backpropagation          : ", psnr(img,imgb))
+print("PSNR filtered backpropagation : ", psnr(img,imgfb))
+print("PSNR variational method       : ", psnr(img,imgc),'\n')
+print("MSE backpropagation          : ", mse(imgb,img))
+print("MSE filtered backpropagation : ", mse(imgfb,img))
+print("MSE variational method     : ",mse(imgc,img))
