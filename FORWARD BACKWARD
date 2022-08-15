@@ -1,0 +1,213 @@
+%matplotlib inline
+from IPython.display import HTML
+import matplotlib as mplt
+from matplotlib import animation, rc
+from PIL import Image
+import numpy as np
+import matplotlib.pyplot as plt
+import holoviews as hv
+hv.extension('bokeh')
+import param
+import pywt
+import panel as pn
+from scipy import fftpack as ft
+from skimage.transform import radon,iradon,rescale,rotate
+imagename = 'ab.png'
+
+def to_square(image):
+    M,N = image.shape
+    P = max(M,N)
+    res = np.zeros((P,P))
+    if M==N: 
+        print("Image ")
+        res = np.copy(image)
+    else:
+        res[int(P/2-M/2):int(P/2+M/2),int(P/2-N/2):int(P/2+N/2)]=image
+    return res
+
+def mse(imageA, imageB):
+    err = np.sum((imageA.astype("float") - imageB.astype("float")) ** 2)
+    err /= float(imageA.shape[0] * imageA.shape[1])
+    return err
+
+def to255(imrec):
+    return np.round((imrec-np.min(imrec))/np.ptp(imrec)*255)
+
+def PSNR(I,Iref):
+    temp=I.ravel()/np.linalg.norm(I)
+    tempref=Iref.ravel()/np.linalg.norm(Iref)
+    NbP=I.size
+    EQM=np.sum((temp-tempref)**2)/NbP
+    b=np.max(np.abs(tempref))**2
+    return 10*np.log10(b/EQM)
+
+image = Image.open(imagename)
+n0,n1=image.size
+img = np.array(image).astype('float64')
+img = np.copy((img[:,:,0]+img[:,:,1]+img[:,:,2])/3)
+dim1 = img.shape[0]
+dim2 = img.shape[1]
+img = np.resize(img,(dim1,dim2))
+img = to_square(img)
+plt.imshow(img,cmap='gray')
+plt.title("_____")
+plt.colorbar()
+plt.show()
+mask = np.clip(img,0,1)
+mask[50:160,60:160]=1
+
+
+## Radon transform: from image to sinogram
+def R(image,N=100):
+    theta = np.linspace(0,180,N)
+    return radon(image,theta,circle=False)
+
+## Adjoint of Radon transform: from sinogram to image using backpropagation (unfiltered or not)
+def R_star(sin,filt=None,inter='cubic'):
+    T,A = sin.shape
+    theta = np.linspace(0,180,A)
+    return iradon(sin,theta,filter=filt,interpolation=inter,circle=False)
+    
+ def SeuillageDouxOndelettes(I,wave,Seuil):
+    L=pywt.dwt_max_level(len(I),pywt.Wavelet(wave).dec_len)
+    wavelet_coeffs= pywt.wavedecn(I, wave, mode='per', level=L)
+    arr, coeff_slices, coeff_shapes = pywt.ravel_coeffs(wavelet_coeffs)
+    temp=pywt.threshold(arr,Seuil,mode='soft')
+    test=pywt.unravel_coeffs(temp, coeff_slices, coeff_shapes, output_format='wavedecn')
+    Irec=pywt.waverecn(test, wave,mode='per')
+    return Irec   
+    
+  lam=1000
+step=0.05
+seui = SeuillageDouxOndelettes(img,'db1',lam*step)
+plt.imshow(seui,cmap='gray')
+plt.colorbar()  
+    
+ def Normel1Ondelettes(I,wave):
+    L=pywt.dwt_max_level(len(I),pywt.Wavelet(wave).dec_len)
+    wavelet_coeffs= pywt.wavedecn(I, wave, mode='per', level=L)  # T
+    arr, coeff_slices, coeff_shapes = pywt.ravel_coeffs(wavelet_coeffs)
+    norml1=sum(np.abs(arr)) # norm
+    return norml1   
+    
+ def Function(x,y,lam,wave,N):
+    return lam*Normel1Ondelettes(x,wave) + 0.5*(np.linalg.norm(R(x,N)-y,2)**2)   
+    
+  def Gradient(x,b,N):
+    return R_star(R(x,N))- R_star(b)
+    
+  def grad_descent(y,x0,step,N,Niter=100):
+    x=np.copy(x0)
+    errors = []
+    F = []
+    for n in range(Niter):
+        print("iter #",n)
+        I = x-step*Gradient(x,y,N)
+        err = np.linalg.norm(I-x)/np.linalg.norm(x)
+        errors.append(err)
+        F.append(0.5*(np.linalg.norm(R(x,N)-y,2)**2))
+        print('error : ',err,'\n')
+        x = np.copy(I)
+    return x, errors,F  
+    
+   N = 20
+y = R(img,N)
+x0= R_star(y)
+step=0.001
+Niter=50
+xfin, err, F = grad_descent(y,x0,step,N,Niter) 
+    
+plt.plot(err)
+plt.yscale('log')
+plt.grid()
+plt.title('Gradient descent convergence')
+plt.ylabel('||x(n+1)-x(n)|| / ||x(n)||')
+plt.xlabel('iterations')
+plt.show()
+
+##### Forward-backward computation ####
+
+def ForwardBackward(y,x0,step,lam,Niter,wave,N=50,tol=0.0001,f=Function):
+    seuil=lam*step
+    x=x0  # Initialisation via retroprojection non-filtrée
+    F=[]
+    nfin = Niter
+    conv = []
+    fig = plt.figure()
+    for n in range(Niter):
+        print("Iter n°",n)
+        I = x-step*Gradient(x,y,N)
+        T = SeuillageDouxOndelettes(I, wave, seuil)
+        if n==0:
+            err = np.linalg.norm(T-x)#/np.linalg.norm(x)
+        else:
+            err = np.linalg.norm(T-x)/np.linalg.norm(x)
+        conv.append(err)
+        x = np.copy(T)
+        F +=  [f(x,y,lam,wave,N)]
+        print("err : ", err,'\n')
+        if err<=tol:
+            nfin = n
+            found = True
+            break
+    return x,np.array(F), np.array(conv[1:]), nfin
+
+
+N = 30
+y = R(img,N)
+lam = 10
+wave = 'db4'
+costtarg = Function(img,y,lam,wave,N)
+Rz = R(img,N)
+imgb = R_star(Rz)
+#x0 = imgb*0
+imgfb = R_star(Rz,'ramp')
+x0 = imgb
+step = 0.005
+Niter = 100
+imgv,F,conv, itert = ForwardBackward(Rz,x0,step,lam,Niter,wave,N=N)
+
+fig, axs = plt.subplots(1, 5, figsize=(9, 3), sharey=True)
+axs[0].imshow(img,cmap='gray')
+axs[0].set_title('Target')
+axs[1].imshow(imgb,cmap='gray')
+axs[1].set_title('Backpropagation')
+axs[2].imshow(imgfb,cmap='gray')
+axs[2].set_title('FB')
+axs[3].imshow(x0,cmap='gray')
+axs[3].set_title('Init')
+axs[4].imshow(imgv,cmap='gray')
+axs[4].set_title('Forward-Backward')
+plt.show()
+
+plt.imshow(imgv,cmap='gray')
+plt.colorbar()
+plt.show()
+
+plt.plot(F)
+plt.yscale('log')
+plt.title('F-B algorithm cost function')
+plt.xlabel('iterations')
+plt.grid()
+plt.ylabel("cost function")
+plt.show()
+
+plt.plot(conv)
+plt.yscale('log')
+plt.title('F-B algorithm convergence')
+plt.xlabel('iterations')
+plt.grid()
+plt.ylabel("||x(n+1)-x(n)|| / ||x(n)||")
+plt.show()
+
+print("PSNR backpropagation          : ", PSNR(imgb,img))
+print("PSNR filtered backpropagation : ", PSNR(imgfb,img))
+print("PSNR variational method       : ", PSNR(imgv,img),'\n')
+print("MSE backpropagation          : ", mse(imgb,img))
+print("MSE filtered backpropagation : ", mse(imgfb,img))
+print("MSE variational method     : ",mse(imgv,img))
+
+
+
+
+
